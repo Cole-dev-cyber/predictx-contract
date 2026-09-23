@@ -23,6 +23,8 @@ enum DataKey {
     PollStatus(u64),
     /// `poll_id` → vote tally. (Temporary — only needed during the voting window)
     VoteTally(u64),
+    /// `(poll_id, voter)` → `bool` — has this voter cast a vote? (Temporary)
+    HasVoted(u64, Address),
 }
 
 fn get_admin(env: &Env) -> Result<Address, PredictXError> {

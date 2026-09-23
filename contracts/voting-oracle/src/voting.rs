@@ -7,12 +7,14 @@ use soroban_sdk::{Address, Env};
 /// Flow (Checks → Effects):
 /// 1. Authenticates the caller as the voter.
 /// 2. Verifies the poll is known to the oracle, else `PollNotFound`.
-/// 3. Loads the existing tally (or seeds a fresh one) and increments the
+/// 3. Rejects a duplicate vote from the same voter, else `AlreadyVoted`.
+/// 4. Loads the existing tally (or seeds a fresh one) and increments the
 ///    chosen outcome's counter plus the total voter count.
-/// 4. Persists the updated tally and returns it.
+/// 5. Persists the updated tally and the per-voter dedup marker, and returns
+///    the tally.
 ///
-/// Out of scope for this change (tracked in separate issues): rejecting
-/// duplicate votes, the voting-window lifecycle, and excluding stakers.
+/// Out of scope for this change (tracked in separate issues): the voting-window
+/// lifecycle and excluding stakers.
 pub fn cast_vote(
     env: &Env,
     voter: Address,
@@ -30,6 +32,11 @@ pub fn cast_vote(
         .has(&DataKey::PollStatus(poll_id))
     {
         return Err(PredictXError::PollNotFound);
+    }
+
+    // Each address may vote at most once per poll.
+    if storage::has_voted(env, poll_id, &voter) {
+        return Err(PredictXError::AlreadyVoted);
     }
 
     // ── Effects ───────────────────────────────────────────────────────────────
@@ -53,6 +60,7 @@ pub fn cast_vote(
     tally.total_voters += 1;
 
     storage::write_tally(env, &tally);
+    storage::write_voted(env, poll_id, &voter);
     Ok(tally)
 }
 
@@ -140,5 +148,66 @@ mod test {
             .expect_err("unknown poll must be rejected");
 
         assert_eq!(err, Ok(PredictXError::PollNotFound));
+    }
+
+    #[test]
+    fn cast_vote_rejects_duplicate_vote_from_same_voter() {
+        let (env, _admin, client) = setup();
+        let v = voter(&env);
+
+        client.cast_vote(&v, &1_u64, &VoteChoice::Yes);
+
+        let err = client
+            .try_cast_vote(&v, &1_u64, &VoteChoice::No)
+            .expect_err("a second vote from the same voter must be rejected");
+
+        assert_eq!(err, Ok(PredictXError::AlreadyVoted));
+    }
+
+    #[test]
+    fn rejected_duplicate_vote_leaves_tally_unchanged() {
+        let (env, _admin, client) = setup();
+        let v = voter(&env);
+
+        client.cast_vote(&v, &1_u64, &VoteChoice::Yes);
+        let rejected = client
+            .try_cast_vote(&v, &1_u64, &VoteChoice::No)
+            .expect_err("second vote must be rejected");
+        assert_eq!(rejected, Ok(PredictXError::AlreadyVoted));
+
+        // A fresh voter's tally proves the rejected vote added nothing.
+        let tally = client.cast_vote(&voter(&env), &1_u64, &VoteChoice::Unclear);
+
+        assert_eq!(tally.yes_votes, 1);
+        assert_eq!(tally.no_votes, 0);
+        assert_eq!(tally.unclear_votes, 1);
+        assert_eq!(tally.total_voters, 2);
+    }
+
+    #[test]
+    fn two_different_voters_can_vote_on_the_same_poll() {
+        let (env, _admin, client) = setup();
+
+        client.cast_vote(&voter(&env), &1_u64, &VoteChoice::Yes);
+        let tally = client.cast_vote(&voter(&env), &1_u64, &VoteChoice::No);
+
+        assert_eq!(tally.yes_votes, 1);
+        assert_eq!(tally.no_votes, 1);
+        assert_eq!(tally.total_voters, 2);
+    }
+
+    #[test]
+    fn same_voter_can_vote_on_two_different_polls() {
+        let (env, _admin, client) = setup();
+        let v = voter(&env);
+
+        client.cast_vote(&v, &1_u64, &VoteChoice::Yes);
+        client.set_poll_status(&2_u64, &PollStatus::Voting);
+
+        let tally = client.cast_vote(&v, &2_u64, &VoteChoice::Yes);
+
+        assert_eq!(tally.poll_id, 2);
+        assert_eq!(tally.yes_votes, 1);
+        assert_eq!(tally.total_voters, 1);
     }
 }
