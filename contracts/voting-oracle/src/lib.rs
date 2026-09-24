@@ -34,6 +34,15 @@ fn get_admin(env: &Env) -> Result<Address, PredictXError> {
         .ok_or(PredictXError::NotInitialized)
 }
 
+pub(crate) fn read_poll_status(env: &Env, poll_id: u64) -> PollStatus {
+    let stored: Option<StoredPollStatus> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PollStatus(poll_id));
+
+    stored.map(|s| s.status).unwrap_or(PollStatus::Active)
+}
+
 #[contractimpl]
 impl VotingOracle {
     pub fn initialize(env: Env, admin: Address) -> Result<(), PredictXError> {
@@ -75,12 +84,7 @@ impl VotingOracle {
 
     /// Placeholder oracle query used by `PredictionMarket`.
     pub fn get_poll_status(env: Env, poll_id: u64) -> PollStatus {
-        let stored: Option<StoredPollStatus> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PollStatus(poll_id));
-
-        stored.map(|s| s.status).unwrap_or(PollStatus::Active)
+        read_poll_status(&env, poll_id)
     }
 
     pub fn get_poll_status_updated_at(env: Env, poll_id: u64) -> u64 {

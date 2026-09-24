@@ -1,5 +1,5 @@
 use crate::{storage, DataKey};
-use predictx_shared::{PredictXError, VoteChoice, VoteTally};
+use predictx_shared::{PollStatus, PredictXError, VoteChoice, VoteTally};
 use soroban_sdk::{Address, Env};
 
 /// Record a voter's choice on a poll.
@@ -32,6 +32,10 @@ pub fn cast_vote(
         .has(&DataKey::PollStatus(poll_id))
     {
         return Err(PredictXError::PollNotFound);
+    }
+
+    if crate::read_poll_status(env, poll_id) != PollStatus::Voting {
+        return Err(PredictXError::VotingNotOpen);
     }
 
     // Each address may vote at most once per poll.
@@ -148,6 +152,30 @@ mod test {
             .expect_err("unknown poll must be rejected");
 
         assert_eq!(err, Ok(PredictXError::PollNotFound));
+    }
+
+    #[test]
+    fn cast_vote_rejects_active_poll() {
+        let (env, _admin, client) = setup();
+        client.set_poll_status(&1_u64, &PollStatus::Active);
+
+        let err = client
+            .try_cast_vote(&voter(&env), &1_u64, &VoteChoice::Yes)
+            .expect_err("active poll must reject voting");
+
+        assert_eq!(err, Ok(PredictXError::VotingNotOpen));
+    }
+
+    #[test]
+    fn cast_vote_rejects_resolved_poll() {
+        let (env, _admin, client) = setup();
+        client.set_poll_status(&1_u64, &PollStatus::Resolved);
+
+        let err = client
+            .try_cast_vote(&voter(&env), &1_u64, &VoteChoice::Yes)
+            .expect_err("resolved poll must reject voting");
+
+        assert_eq!(err, Ok(PredictXError::VotingNotOpen));
     }
 
     #[test]
