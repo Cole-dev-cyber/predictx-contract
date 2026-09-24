@@ -131,6 +131,38 @@ pub fn auto_resolve(env: &Env, poll_id: u64) -> Result<VoteChoice, PredictXError
     Ok(outcome)
 }
 
+/// Share of the decisive (Yes/No) votes held by the leading outcome.
+///
+/// Returns `(leading_is_yes, share_bps)`, where `share_bps` is rounded down
+/// to whole basis points out of [`BPS_DENOMINATOR`].
+///
+/// - `Unclear` votes are excluded from the denominator: they signal "cannot
+///   judge", not a preference.
+/// - A Yes/No tie resolves to Yes (`true`) at 5000 bps, so the result is
+///   deterministic.
+/// - A tally with no decisive votes (e.g. all `Unclear`) returns `(false, 0)`
+///   instead of dividing by zero.
+///
+/// Pure and side-effect free so the routing thresholds can be unit-tested
+/// against it directly.
+#[allow(dead_code)] // consumed by the upcoming threshold-routing issues
+pub(crate) fn consensus_bps(tally: &VoteTally) -> (bool, u32) {
+    let decisive = u64::from(tally.yes_votes) + u64::from(tally.no_votes);
+    if decisive == 0 {
+        return (false, 0);
+    }
+
+    let leading_is_yes = tally.yes_votes >= tally.no_votes;
+    let leading_votes = if leading_is_yes {
+        tally.yes_votes
+    } else {
+        tally.no_votes
+    };
+
+    let share_bps = (u64::from(leading_votes) * u64::from(BPS_DENOMINATOR) / decisive) as u32;
+    (leading_is_yes, share_bps)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -361,5 +393,44 @@ mod test {
 
         assert_eq!(err, Ok(PredictXError::VotingNotOpen));
         assert_eq!(client.get_poll_status(&1_u64), PollStatus::Voting);
+    }
+
+    // ── consensus_bps ─────────────────────────────────────────────────────────
+
+    fn tally(yes_votes: u32, no_votes: u32, unclear_votes: u32) -> predictx_shared::VoteTally {
+        predictx_shared::VoteTally {
+            poll_id: 1,
+            yes_votes,
+            no_votes,
+            unclear_votes,
+            total_voters: yes_votes + no_votes + unclear_votes,
+            voting_end_time: 0,
+            reward_pool: 0,
+        }
+    }
+
+    #[test]
+    fn consensus_bps_matches_spec_worked_example() {
+        assert_eq!(super::consensus_bps(&tally(45, 2, 0)), (true, 9_574));
+        assert_eq!(super::consensus_bps(&tally(2, 45, 0)), (false, 9_574));
+    }
+
+    #[test]
+    fn consensus_bps_ignores_unclear_votes() {
+        assert_eq!(
+            super::consensus_bps(&tally(45, 2, 30)),
+            super::consensus_bps(&tally(45, 2, 0))
+        );
+    }
+
+    #[test]
+    fn consensus_bps_all_unclear_returns_zero() {
+        assert_eq!(super::consensus_bps(&tally(0, 0, 7)), (false, 0));
+        assert_eq!(super::consensus_bps(&tally(0, 0, 0)), (false, 0));
+    }
+
+    #[test]
+    fn consensus_bps_tie_favours_yes() {
+        assert_eq!(super::consensus_bps(&tally(10, 10, 3)), (true, 5_000));
     }
 }
