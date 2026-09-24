@@ -322,6 +322,37 @@ impl PredictionMarket {
             .get(&DataKey::Poll(poll_id))
             .ok_or(PredictXError::PollNotFound)
     }
+    pub fn resolve_poll(env: Env, caller: Address, poll_id: u64, outcome: bool) -> Result<(), PredictXError> {
+        caller.require_auth();
+        let oracle = get_oracle(&env)?;
+        if caller != oracle {
+            return Err(PredictXError::Unauthorized);
+        }
+
+        let mut poll: Poll = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Poll(poll_id))
+            .ok_or(PredictXError::PollNotFound)?;
+
+        if poll.status == PollStatus::Resolved {
+            return Err(PredictXError::PollAlreadyResolved);
+        }
+
+        poll.outcome = Some(outcome);
+        poll.resolution_time = env.ledger().timestamp();
+        poll.status = PollStatus::Resolved;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Poll(poll_id), &poll);
+
+        env.events()
+            .publish((Symbol::new(&env, "PollResolved"), poll_id), ());
+
+        Ok(())
+    }
+
 
     // ── Staking ───────────────────────────────────────────────────────────────
 
@@ -515,6 +546,46 @@ mod test {
         client.unpause(&admin);
         assert_eq!(client.is_paused(), false);
     }
+    #[test]
+    fn resolve_poll_requires_oracle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let contract_id = env.register(PredictionMarket, ());
+        let client = PredictionMarketClient::new(&env, &contract_id);
+        let tok = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        client.initialize(&admin, &oracle, &tok, &treasury, &TEST_FEE_BPS);
+
+        let user = Address::generate(&env);
+        let err = client.try_resolve_poll(&user, &1_u64, &true).expect_err("should fail");
+        assert_eq!(err, Ok(PredictXError::Unauthorized));
+    }
+
+    #[test]
+    fn resolve_poll_sets_outcome_and_resolution_time() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let contract_id = env.register(PredictionMarket, ());
+        let client = PredictionMarketClient::new(&env, &contract_id);
+        let tok = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        client.initialize(&admin, &oracle, &tok, &treasury, &TEST_FEE_BPS);
+
+        client.create_poll(&admin, &1_u64, &"Question".into(), &PollCategory::Sports, &1000_u64);
+
+        let timestamp = env.ledger().timestamp();
+        client.resolve_poll(&oracle, &1_u64, &true);
+
+        let poll = client.get_poll(&1_u64);
+        assert_eq!(poll.outcome, Some(true));
+        assert_eq!(poll.resolution_time, timestamp);
+        assert_eq!(poll.status, PollStatus::Resolved);
+    }
+
 
     #[test]
     fn cancel_poll_sets_cancelled_status_and_emits_event() {
