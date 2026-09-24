@@ -1,6 +1,35 @@
 use crate::DataKey;
-use predictx_shared::VoteTally;
-use soroban_sdk::{Address, Env};
+use predictx_shared::{PredictXError, VoteTally};
+use soroban_sdk::{Address, Env, Vec};
+
+// ── Admin registry storage ────────────────────────────────────────────────────
+
+/// Read the registered admins, defaulting to an empty list.
+pub fn read_admins(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminList)
+        .unwrap_or(Vec::new(env))
+}
+
+/// Persist the registered admins.
+pub fn write_admins(env: &Env, admins: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::AdminList, admins);
+}
+
+/// Whether `addr` is a registered admin.
+pub fn is_admin(env: &Env, addr: &Address) -> bool {
+    read_admins(env).contains(addr.clone())
+}
+
+/// Ensure `caller` is a registered admin, else `Unauthorized`.
+pub fn require_admin(env: &Env, caller: &Address) -> Result<(), PredictXError> {
+    if is_admin(env, caller) {
+        Ok(())
+    } else {
+        Err(PredictXError::Unauthorized)
+    }
+}
 
 // ── Vote tally storage ────────────────────────────────────────────────────────
 
